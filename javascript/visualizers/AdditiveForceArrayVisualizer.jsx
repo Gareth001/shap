@@ -393,9 +393,9 @@ class AdditiveForceArrayVisualizer extends React.Component {
     );
 
     let options = [
+      "original sample ordering",
       "sample order by similarity",
-      "sample order by output value",
-      "original sample ordering"
+      "sample order by output value"
     ].concat(this.singleValueFeatures.map(i => this.props.featureNames[i]));
     if (this.props.ordering_keys != null)  {
       options.unshift("sample order by key");
