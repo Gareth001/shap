@@ -115,8 +115,10 @@ def match_model_to_data(model, data):
         raise
 
     if model.out_names is None:
-        if len(out_val.shape) == 1:
+        if len(out_val) == 1:
             model.out_names = ["output value"]
+        elif len(out_val) == 3:
+            model.out_names = ["output value", "h", "c"]
         else:
             model.out_names = ["output value "+str(i) for i in range(out_val.shape[0])]
     

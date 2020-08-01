@@ -62,6 +62,9 @@ class Kernel(Explainer):
         self.keep_index_ordered = kwargs.get("keep_index_ordered", False)
         self.data = convert_to_data(data, keep_index=self.keep_index)
         model_null = match_model_to_data(self.model, self.data)
+        # mapping from sequence ID to hidden states from association array
+        self.prev_hidden_states = {}
+        self.next_hidden_states = {}
 
         # enforce our current input type limitations
         assert isinstance(self.data, DenseData) or isinstance(self.data, SparseData), \
@@ -84,7 +87,7 @@ class Kernel(Explainer):
         # find E_x[f(x)]
         if isinstance(model_null, (pd.DataFrame, pd.Series)):
             model_null = np.squeeze(model_null.values)
-        self.fnull = np.sum((model_null.T * self.data.weights).T, 0)
+        self.fnull = np.sum((model_null[0].T * self.data.weights).T, 0)
         self.expected_value = self.linkfv(self.fnull)
 
         # see if we have a vector output
@@ -98,7 +101,7 @@ class Kernel(Explainer):
             self.D = self.fnull.shape[0]
 
 
-    def shap_values(self, X, **kwargs):
+    def shap_values(self, X, association=None, **kwargs):
         """ Estimate the SHAP values for a set of samples.
 
         Parameters
@@ -175,7 +178,7 @@ class Kernel(Explainer):
                 data = X[i:i + 1, :]
                 if self.keep_index:
                     data = convert_to_instance_with_index(data, column_name, index_value[i:i + 1], index_name)
-                explanations.append(self.explain(data, **kwargs))
+                explanations.append(self.explain(data, association.iloc[i] if association is not None else association, **kwargs))
 
             # vector-output
             s = explanations[0].shape
@@ -193,7 +196,7 @@ class Kernel(Explainer):
                     out[i] = explanations[i]
                 return out
 
-    def explain(self, incoming_instance, **kwargs):
+    def explain(self, incoming_instance, sequence_index, **kwargs):
         # convert incoming input to a standardized iml object
         instance = convert_to_instance(incoming_instance)
         match_instance_to_data(instance, self.data)
@@ -215,11 +218,24 @@ class Kernel(Explainer):
                 if self.varyingFeatureGroups.shape[1] == 1:
                     self.varyingFeatureGroups = self.varyingFeatureGroups.flatten()
 
+        # also take the sequence index of this input
+        if sequence_index in self.next_hidden_states:
+            hidden = self.next_hidden_states[sequence_index]
+        else:
+            hidden = None
+
         # find f(x)
         if self.keep_index:
             model_out = self.model.f(instance.convert_to_df())
         else:
-            model_out = self.model.f(instance.x)
+            model_out = self.model.f(instance.x, internal_state=hidden)
+
+        # save the hidden states here, also add hidden states into the function  
+        if sequence_index is not None:
+            _, h, c = model_out
+            self.next_hidden_states[sequence_index] = (h, c)
+            self.prev_hidden_states[sequence_index] = hidden
+
         if isinstance(model_out, (pd.DataFrame, pd.Series)):
             model_out = model_out.values
         self.fx = model_out[0]
@@ -365,7 +381,7 @@ class Kernel(Explainer):
                 self.kernelWeights[nfixed_samples:] *= weight_left / self.kernelWeights[nfixed_samples:].sum()
 
             # execute the model on the synthetic samples we have created
-            self.run()
+            self.run(sequence_index=sequence_index)
 
             # solve then expand the feature importance (Shapley value) vector to contain the non-varying features
             phi = np.zeros((self.data.groups_size, self.D))
@@ -492,7 +508,7 @@ class Kernel(Explainer):
         self.kernelWeights[self.nsamplesAdded] = w
         self.nsamplesAdded += 1
 
-    def run(self):
+    def run(self, sequence_index=None):
         num_to_run = self.nsamplesAdded * self.N - self.nsamplesRun * self.N
         data = self.synth_data[self.nsamplesRun*self.N:self.nsamplesAdded*self.N,:]
         if self.keep_index:
@@ -502,7 +518,17 @@ class Kernel(Explainer):
             data = pd.concat([index, data], axis=1).set_index(self.data.index_name)
             if self.keep_index_ordered:
                 data = data.sort_index()
-        modelOut = self.model.f(data)
+
+        if sequence_index is not None:
+            # extend hidden states array for all samples
+            # TODO need more idiomatic numpy
+            h, c = self.next_hidden_states[sequence_index]
+            h = np.array([h[0]] * len(data))
+            c = np.array([c[0]] * len(data))
+            modelOut, _, _ = self.model.f(data, internal_state=(h, c))
+        else:
+            modelOut = self.model.f(data)
+
         if isinstance(modelOut, (pd.DataFrame, pd.Series)):
             modelOut = modelOut.values
         self.y[self.nsamplesRun * self.N:self.nsamplesAdded * self.N, :] = np.reshape(modelOut, (num_to_run, self.D))
