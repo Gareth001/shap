@@ -521,11 +521,13 @@ class Kernel(Explainer):
 
         if sequence_index is not None:
             # extend hidden states array for all samples
-            # TODO need more idiomatic numpy
-            h, c = self.next_hidden_states[sequence_index]
-            h = np.array([h[0]] * len(data))
-            c = np.array([c[0]] * len(data))
-            modelOut, _, _ = self.model.f(data, internal_state=(h, c))
+            if self.prev_hidden_states[sequence_index] is None:
+                modelOut, _, _ = self.model.f(data, internal_state=None)
+            else:
+                h, c = self.prev_hidden_states[sequence_index]
+                h = np.array([h[0]] * len(data))
+                c = np.array([c[0]] * len(data))
+                modelOut, _, _ = self.model.f(data, internal_state=(h, c))
         else:
             modelOut = self.model.f(data)
 
